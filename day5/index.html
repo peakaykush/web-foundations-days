@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>User Directory - Day 5</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="users.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="header-container">
+      <h1>User Directory</h1>
+      <p>Fetch and filter user records from external REST APIs.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card controls-card">
+      <div class="actions-row">
+        <button id="load-users" type="button">Load Users</button>
+        <div class="filter-group">
+          <label for="filter-input">Filter by name</label>
+          <input type="text" id="filter-input" placeholder="Type a name to filter..." autocomplete="off">
+        </div>
+      </div>
+      <p id="status" role="status"></p>
+    </section>
+
+    <section class="card users-card">
+      <h2>Users</h2>
+      <ul id="users-list"></ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 User Directory. All rights reserved.</p>
+  </footer>
+</body>
+</html>
