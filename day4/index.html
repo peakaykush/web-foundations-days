@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QuickNotes - Note Draft</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="script.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="header-container">
+      <div>
+        <h1>QuickNotes</h1>
+        <p>A simple, lightweight note-taking app to capture your thoughts instantly.</p>
+      </div>
+      <div class="theme-wrapper">
+        <button id="theme-toggle" type="button">Dark mode</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="note-card">
+      <h2>Draft Note</h2>
+      <div class="form-group">
+        <label for="note-text">Note Text</label>
+        <textarea id="note-text" name="note-text" rows="7" placeholder="Type your note here (up to 200 characters)..."></textarea>
+      </div>
+
+      <div class="counter-group">
+        <p id="char-count">0 / 200 characters</p>
+        <p id="word-count">0 words</p>
+      </div>
+
+      <div class="button-group">
+        <button id="clear-btn" type="button">Clear</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 QuickNotes. All rights reserved.</p>
+  </footer>
+</body>
+</html>
