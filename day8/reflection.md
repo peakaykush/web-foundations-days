@@ -1,0 +1,10 @@
+# Course Reflection
+
+### What was the most difficult concept in the course, and how did you overcome it?
+The most difficult concept in the course was managing high-concurrency race conditions and transaction isolation in distributed architectures. Understanding how thousands of simultaneous requests cause database deadlocks, phantom reads, and catastrophic double-booking was initially challenging. I overcame this by breaking concurrency down into concrete layers: practicing atomic conditional SQL updates (`WHERE status = 'AVAILABLE'`), experimenting with optimistic locking via version numbers, and testing pessimistic row-level locks (`SELECT ... FOR UPDATE`). Tracing end-to-end request lifecycles and utilizing Redis as an in-memory shock absorber clarified how to protect relational databases under extreme peak traffic.
+
+### Which part of your capstone would you improve, based on the feedback you received?
+For my QuickNotes capstone, I would improve offline-first synchronization and multi-client conflict resolution based on the feedback received. While the interactive prototype successfully demonstrated asynchronous REST operations, responsive design, and defensive input validation, simultaneous edits across multiple browser tabs or flaky mobile networks currently risk overwriting unsaved changes. I would integrate an IndexedDB local storage layer with optimistic UI rendering and background synchronization, paired with timestamped version vectors or Conflict-free Replicated Data Types (CRDTs) to ensure seamless, conflict-free note merging across devices.
+
+### What will you learn next?
+Next, I plan to master distributed event-driven architectures and container orchestration. Specifically, I want to build production systems utilizing Apache Kafka for high-throughput event streaming and RabbitMQ for reliable background job processing. Additionally, I will delve into Docker containerization and Kubernetes cluster management to gain hands-on expertise in automated horizontal pod auto-scaling, canary rollouts, and resilient cloud-native infrastructure monitoring.
