@@ -32,12 +32,12 @@ TicketHub is a high-performance, distributed ticketing platform that handles eve
 - **Normal Day Traffic:**
   - **Daily Visitors:** 50,000 unique visitors / day.
   - **Page Views per Visitor:** 10 pages / visitor.
-  - **Total Daily Page Views:** $50,000 \times 10 = 500,000$ page views / day.
+  - **Total Daily Page Views:** 50,000 * 10 = 500,000 page views / day.
   - **Normal Ticket Sales:** 5,000 tickets sold / day.
-  - **Seconds per Day:** $24 \times 60 \times 60 = 86,400\text{ seconds}$.
+  - **Seconds per Day:** 24 * 60 * 60 = 86,400 seconds.
 - **"Big Sale" Peak Event (Flash Crowd):**
   - **Concert Capacity:** 20,000 seats.
-  - **Surge Audience:** 200,000 concurrent users attempting to buy seats within the first 10 minutes ($600\text{ seconds}$).
+  - **Surge Audience:** 200,000 concurrent users attempting to buy seats within the first 10 minutes (600 seconds).
   - **User Interaction Rate:** Each user generates an estimated 15 requests over the 10-minute window (landing, waiting room polling, seat map fetch, repeated hold attempts, checkout).
 
 ---
@@ -47,41 +47,47 @@ TicketHub is a high-performance, distributed ticketing platform that handles eve
 #### A. Normal Day Traffic
 1. **Average Read Throughput (Page Views / sec):**
    $$\text{Normal Read RPS} = \frac{500,000\text{ requests}}{86,400\text{ seconds}} \approx 5.79\text{ RPS}$$
-2. **Peak Normal Read Throughput ($3\times$ diurnal peak factor):**
+   *(Calculation: 500,000 requests / 86,400 seconds = ~5.79 requests per second)*
+2. **Peak Normal Read Throughput (3x diurnal peak factor):**
    $$\text{Peak Normal Read RPS} = 5.79 \times 3 \approx 17.4\text{ RPS}$$
+   *(Calculation: 5.79 * 3 = ~17.4 requests per second)*
 3. **Average Write Throughput (Ticket Purchases / sec):**
    $$\text{Normal Write RPS} = \frac{5,000\text{ purchases}}{86,400\text{ seconds}} \approx 0.058\text{ writes/sec}$$
-4. **Peak Normal Write Throughput ($3\times$ factor):**
+   *(Calculation: 5,000 purchases / 86,400 seconds = ~0.058 writes per second)*
+4. **Peak Normal Write Throughput (3x factor):**
    $$\text{Peak Normal Write RPS} = 0.058 \times 3 \approx 0.174\text{ writes/sec}$$
+   *(Calculation: 0.058 * 3 = ~0.174 writes per second)*
 
 #### B. "Big Sale" Peak Traffic (10-Minute Surge = 600 Seconds)
 1. **Total Requests Generated:**
    $$\text{Total Surge Requests} = 200,000\text{ users} \times 15\text{ requests} = 3,000,000\text{ requests in } 600\text{ s}$$
+   *(Calculation: 200,000 users * 15 requests = 3,000,000 total requests over 600 seconds)*
 2. **Peak Read & Polling Throughput:**
    $$\text{Surge Read RPS} = \frac{3,000,000\text{ requests}}{600\text{ seconds}} = 5,000\text{ RPS}$$
-   *(Initial burst in the opening 60 seconds reaches 12,000+ RPS).*
+   *(Calculation: 3,000,000 requests / 600 seconds = 5,000 RPS average across the window; the initial burst in the opening 60 seconds reaches 12,000+ RPS).*
 3. **Seat Hold Write Attempts:**
    Assuming each user attempts an average of 2 seat-hold transactions before succeeding or failing:
    $$\text{Hold Attempts} = 200,000 \times 2 = 400,000\text{ write attempts in } 600\text{ s}$$
    $$\text{Average Hold Write RPS} = \frac{400,000}{600\text{ seconds}} \approx 667\text{ write requests/sec}$$
-   *(Peak burst rate during the first minute exceeds 2,500 write requests/sec).*
+   *(Calculation: 400,000 attempts / 600 seconds = ~667 write requests per second; peak burst rate during the first minute exceeds 2,500 write requests per second).*
 4. **Successful Order Checkout Throughput:**
    All 20,000 available seats sell out within the 10-minute window:
    $$\text{Order Checkout RPS} = \frac{20,000\text{ tickets}}{600\text{ seconds}} \approx 33.3\text{ successful checkouts/sec}$$
+   *(Calculation: 20,000 tickets / 600 seconds = ~33.3 successful checkouts per second).*
 
 ---
 
 ### 2.3 Traffic Profile Comparison
 
-| Metric | Normal Day | Big Sale Peak (10 min) | Spike Factor |
+| Metric | Normal Day Traffic | Big Sale Peak Traffic (10-Minute Surge) | Surge Spike Factor & Impact Analysis |
 | :--- | :--- | :--- | :--- |
-| **Active Users / Window** | 50,000 / day | 200,000 / 10 minutes | **$\sim 576\times$ user density** |
-| **Read Throughput** | $\sim 5.8\text{ RPS}$ | $\sim 5,000 - 12,000\text{ RPS}$ | **$\sim 860\times - 2,070\times$ increase** |
-| **Write Throughput (Holds)** | $\sim 0.06\text{ writes/sec}$ | $\sim 667 - 2,500\text{ writes/sec}$ | **$\sim 11,500\times - 43,000\times$ increase** |
-| **Inventory Contention** | Near 0 (scattered events) | **10 users competing per 1 seat** | Extreme row-level lock contention |
-| **Failure Mode Without Mitigation**| Negligible load | Complete DB lock collapse, connection exhaustion | Immediate site crash |
+| **Active Users / Window** | 50,000 unique visitors per day. | 200,000 concurrent active users in the initial 10-minute window. | An increase of approximately 576x user density per unit of time. |
+| **Read Throughput** | Approximately 5.8 requests per second baseline. | Between 5,000 and 12,000 requests per second at peak. | An increase of 860x to 2,070x over normal baseline read traffic. |
+| **Write Throughput (Holds)** | Approximately 0.06 write requests per second. | Between 667 and 2,500 seat hold write requests per second. | An increase of 11,500x to 43,000x in transactional write intensity. |
+| **Inventory Contention** | Near 0 contention across widely scattered events and showtimes. | 10 active concurrent users competing for every single available seat. | Extreme physical row-level write contention focused on the exact same 20,000 database rows. |
+| **Failure Mode Without Mitigation** | Negligible resource load; the server operates with ample headroom. | Complete database lock collapse and connection pool exhaustion. | Immediate site crash, thread starvation, and total service unavailability with HTTP 504 gateway timeouts. |
 
-**Key Architectural Insight:** Normal traffic is easily sustained by a single miniature server and database. However, the Big Sale concentrates a massive surge of concurrent writes onto the *exact same 20,000 rows* in a single table. Handling this requires queue-based backpressure, caching, and atomic lock management.
+**Key Architectural Insight:** Normal traffic is easily sustained by a single miniature server and database instance. However, the Big Sale concentrates a massive surge of concurrent writes onto the exact same 20,000 rows in a single table within seconds. Surviving this requires queue-based backpressure, caching, and atomic lock management.
 
 ---
 
@@ -697,66 +703,66 @@ If an active checkout transaction is currently executing `SELECT ... FOR UPDATE`
 
 ```
                                 [ 200,000 Fans on Web & Mobile ]
-                                                │
-                                                ▼
-                        ┌───────────────────────────────────────────────┐
-                        │          Global CDN & Edge Layer              │
-                        │  - Cloudflare Edge (DDoS Mitigation, WAF)     │
-                        │  - Static Asset & Venue Map Caching           │
-                        └───────────────────────┬───────────────────────┘
-                                                │
-                                                ▼
-                        ┌───────────────────────────────────────────────┐
-                        │      Virtual Waiting Room / Token Gate        │
-                        │  - Throttles 200k users to 1,000 users/minute │
-                        │  - Cryptographic Admission Token (FIFO)       │
-                        └───────────────────────┬───────────────────────┘
-                                                │
-                                                ▼
-                        ┌───────────────────────────────────────────────┐
-                        │     API Gateway / Layer 7 Load Balancer       │
-                        │  - Rate Limiting, JWT Validation, SSL Term.   │
-                        └───────┬───────────────────────────────┬───────┘
-                                │                               │
-                   ┌────────────┴─────────────┐   ┌─────────────┴────────────┐
-                   ▼                          ▼   ▼                          ▼
-            ┌───────────────┐         ┌───────────────┐              ┌───────────────┐
-            │ Event Service │         │ Hold Service  │              │ Order Service │
-            │ (Stateless)   │         │ (Stateless)   │              │ (Stateless)   │
-            └───────┬───────┘         └───────┬───────┘              └───────┬───────┘
-                    │                         │                              │
-                    │              ┌──────────┴──────────┐                   │
-                    ▼              ▼                     ▼                   ▼
-          ┌───────────────────────────────┐   ┌───────────────────────────────┐
-          │     Redis In-Memory Cluster   │   │     Stripe / Payment Gateway  │
-          │ - Seat Status Bitmaps/Hashes  │   │ - Idempotent Charge API       │
-          │ - Distributed Lock (Lua TTL)  │   └───────────────────────────────┘
-          └───────────────┬───────────────┘                                  │
-                          │                                                  │
-                          │          ┌───────────────────────┐               │
-                          │          │ PgBouncer Pooler      │               │
-                          │          │ (Transaction Pooling) │               │
-                          │          └───────────┬───────────┘               │
-                          │                      │                           │
-                          ▼                      ▼                           ▼
-           ┌──────────────────────────────────────────────────────────────────┐
-           │                 Primary Relational DB (PostgreSQL)              │
-           │ - Strict ACID Transactions, Row-Level Locks                     │
-           │ - Authoritative Master for Writes (Holds, Checkouts)            │
-           └───────────────────────────────┬──────────────────────────────────┘
-                                           │ (Streaming Replication)
-                                           ▼
-           ┌──────────────────────────────────────────────────────────────────┐
-           │                 Read Replica PostgreSQL Cluster                 │
-           │ - User order history, profile queries, reporting                 │
-           └──────────────────────────────────────────────────────────────────┘
-                                           ▲
-                                           │
-           ┌───────────────────────────────┴──────────────────────────────────┐
-           │            Asynchronous Workers & Queue (BullMQ / SQS)           │
-           │ - Expired Hold Sweeper (reconciles expired locks every 5s)       │
-           │ - Ticket PDF rendering, email/SMS dispatch                       │
-           └──────────────────────────────────────────────────────────────────┘
+                                                |
+                                                v
+                        +-----------------------------------------------+
+                        |          Global CDN & Edge Layer              |
+                        |  - Cloudflare Edge (DDoS Mitigation, WAF)     |
+                        |  - Static Asset & Venue Map Caching           |
+                        +-----------------------+-----------------------+
+                                                |
+                                                v
+                        +-----------------------------------------------+
+                        |      Virtual Waiting Room / Token Gate        |
+                        |  - Throttles 200k users to 1,000 users/minute |
+                        |  - Cryptographic Admission Token (FIFO)       |
+                        +-----------------------+-----------------------+
+                                                |
+                                                v
+                        +-----------------------------------------------+
+                        |     API Gateway / Layer 7 Load Balancer       |
+                        |  - Rate Limiting, JWT Validation, SSL Term.   |
+                        +-------+-------------------------------+-------+
+                                |                               |
+                   +------------+-------------+   +-------------+------------+
+                   v                          v   v                          v
+            +---------------+         +---------------+              +---------------+
+            | Event Service |         | Hold Service  |              | Order Service |
+            | (Stateless)   |         | (Stateless)   |              | (Stateless)   |
+            +-------+-------+         +-------+-------+              +-------+-------+
+                    |                         |                              |
+                    |              +----------+----------+                   |
+                    v              v                     v                   v
+          +-------------------------------+   +-------------------------------+
+          |     Redis In-Memory Cluster   |   |     Stripe / Payment Gateway  |
+          | - Seat Status Bitmaps/Hashes  |   | - Idempotent Charge API       |
+          | - Distributed Lock (Lua TTL)  |   +-------------------------------+
+          +---------------+---------------+                                  |
+                          |                                                  |
+                          |          +-----------------------+               |
+                          |          | PgBouncer Pooler      |               |
+                          |          | (Transaction Pooling) |               |
+                          |          +-----------+-----------+               |
+                          |                      |                           |
+                          v                      v                           v
+           +------------------------------------------------------------------+
+           |                 Primary Relational DB (PostgreSQL)               |
+           | - Strict ACID Transactions, Row-Level Locks                      |
+           | - Authoritative Master for Writes (Holds, Checkouts)             |
+           +-------------------------------+----------------------------------+
+                                           | (Streaming Replication)
+                                           v
+           +------------------------------------------------------------------+
+           |                 Read Replica PostgreSQL Cluster                  |
+           | - User order history, profile queries, reporting                 |
+           +------------------------------------------------------------------+
+                                           ^
+                                           |
+           +-------------------------------+----------------------------------+
+           |            Asynchronous Workers & Queue (BullMQ / SQS)            |
+           | - Expired Hold Sweeper (reconciles expired locks every 5s)        |
+           | - Ticket PDF rendering, email/SMS dispatch                        |
+           +------------------------------------------------------------------+
 ```
 
 ---
