@@ -79,13 +79,32 @@ TicketHub is a high-performance, distributed ticketing platform that handles eve
 
 ### 2.3 Traffic Profile Comparison
 
-| Metric | Normal Day Traffic | Big Sale Peak Traffic (10-Minute Surge) | Surge Spike Factor & Impact Analysis |
-| :--- | :--- | :--- | :--- |
-| **Active Users / Window** | 50,000 unique visitors per day. | 200,000 concurrent active users in the initial 10-minute window. | An increase of approximately 576x user density per unit of time. |
-| **Read Throughput** | Approximately 5.8 requests per second baseline. | Between 5,000 and 12,000 requests per second at peak. | An increase of 860x to 2,070x over normal baseline read traffic. |
-| **Write Throughput (Holds)** | Approximately 0.06 write requests per second. | Between 667 and 2,500 seat hold write requests per second. | An increase of 11,500x to 43,000x in transactional write intensity. |
-| **Inventory Contention** | Near 0 contention across widely scattered events and showtimes. | 10 active concurrent users competing for every single available seat. | Extreme physical row-level write contention focused on the exact same 20,000 database rows. |
-| **Failure Mode Without Mitigation** | Negligible resource load; the server operates with ample headroom. | Complete database lock collapse and connection pool exhaustion. | Immediate site crash, thread starvation, and total service unavailability with HTTP 504 gateway timeouts. |
+Instead of a generic table, the architectural impact between baseline everyday operations and flash-sale conditions is broken down across five concrete system dimensions:
+
+#### 1. Active Users & Concurrency Density
+- **Normal Day Traffic:** 50,000 unique visitors per day spread naturally across 24 hours.
+- **Big Sale Peak Traffic (10-Minute Surge):** 200,000 concurrent active users arriving within the initial 10-minute window (600 seconds).
+- **Spike Factor & Impact:** An increase of approximately **576x user density** per unit of time, creating massive connection demand at the ingress tier.
+
+#### 2. Read Throughput (Page Views & Availability Checks)
+- **Normal Day Traffic:** Approximately 5.8 read requests per second baseline, with peak diurnal traffic reaching ~17.4 RPS.
+- **Big Sale Peak Traffic (10-Minute Surge):** Average of 5,000 read requests per second, surging to 12,000+ RPS during opening seat map fetches.
+- **Spike Factor & Impact:** An increase of **860x to 2,070x** over normal baseline read traffic, requiring aggressive edge CDN caching and read-replica distribution.
+
+#### 3. Write Throughput (Temporary Seat Holds)
+- **Normal Day Traffic:** Approximately 0.06 write requests per second, peaking at ~0.174 writes per second.
+- **Big Sale Peak Traffic (10-Minute Surge):** Average of 667 write requests per second, with opening-minute burst rates exceeding 2,500 write requests per second.
+- **Spike Factor & Impact:** An increase of **11,500x to 43,000x** in transactional write intensity, creating catastrophic row-level lock contention without queue-based throttling.
+
+#### 4. Physical Inventory Contention
+- **Normal Day Traffic:** Near 0 contention across widely scattered events, cities, and dates.
+- **Big Sale Peak Traffic (10-Minute Surge):** Extreme contention with **10 active concurrent users competing for every single seat** (200,000 users competing for 20,000 seats).
+- **Spike Factor & Impact:** High probability of simultaneous write operations targeting the exact same database rows, demanding atomic serialization and mutual exclusion.
+
+#### 5. Failure Mode Without Mitigation
+- **Normal Day Traffic:** Negligible resource load; the single small database operates with ample headroom and sub-50ms latency.
+- **Big Sale Peak Traffic (10-Minute Surge):** Instantaneous database connection pool exhaustion, unconstrained process spawning, transaction deadlocks, and cascading thread starvation.
+- **Spike Factor & Impact:** Complete site crash within 10 seconds of ticket drop, resulting in dropped TCP connections and HTTP 504 Gateway Timeouts for 100% of users.
 
 **Key Architectural Insight:** Normal traffic is easily sustained by a single miniature server and database instance. However, the Big Sale concentrates a massive surge of concurrent writes onto the exact same 20,000 rows in a single table within seconds. Surviving this requires queue-based backpressure, caching, and atomic lock management.
 
@@ -701,68 +720,61 @@ If an active checkout transaction is currently executing `SELECT ... FOR UPDATE`
 
 ### 6.1 End-to-End System Architecture Diagram
 
+```mermaid
+graph TD
+    Fans["200,000 Fans (Web & Mobile Clients)"] --> CDN["Global CDN & WAF (Cloudflare Edge)"]
+    CDN --> WaitingRoom["Virtual Waiting Room (1,000 Users/Min FIFO Token Gate)"]
+    WaitingRoom --> Gateway["API Gateway & Layer 7 Load Balancer (Rate Limiting, JWT)"]
+    
+    Gateway --> EventService["Event Service (Stateless Microservice Pods)"]
+    Gateway --> HoldService["Hold Service (Stateless Microservice Pods)"]
+    Gateway --> OrderService["Order Service (Stateless Microservice Pods)"]
+    
+    EventService --> Redis["Redis In-Memory Cluster (Seat Status Bitmaps & Lua Locks)"]
+    HoldService --> Redis
+    OrderService --> Stripe["Payment Gateway (Stripe Idempotent Charge API)"]
+    
+    HoldService --> PgBouncer["PgBouncer Connection Pooler (Transaction Mode, 200 Max Conn)"]
+    OrderService --> PgBouncer
+    
+    PgBouncer --> PostgresPrimary["PostgreSQL Primary Database (ACID Master for Writes & Locks)"]
+    PostgresPrimary -.->|Streaming Replication| PostgresReplica["PostgreSQL Read Replicas (Catalog & Order History Queries)"]
+    EventService --> PostgresReplica
+    
+    AsyncWorkers["Asynchronous Workers (BullMQ / SQS Queue)"] --> PostgresPrimary
+    AsyncWorkers --> Redis
 ```
-                                [ 200,000 Fans on Web & Mobile ]
-                                                |
-                                                v
-                        +-----------------------------------------------+
-                        |          Global CDN & Edge Layer              |
-                        |  - Cloudflare Edge (DDoS Mitigation, WAF)     |
-                        |  - Static Asset & Venue Map Caching           |
-                        +-----------------------+-----------------------+
-                                                |
-                                                v
-                        +-----------------------------------------------+
-                        |      Virtual Waiting Room / Token Gate        |
-                        |  - Throttles 200k users to 1,000 users/minute |
-                        |  - Cryptographic Admission Token (FIFO)       |
-                        +-----------------------+-----------------------+
-                                                |
-                                                v
-                        +-----------------------------------------------+
-                        |     API Gateway / Layer 7 Load Balancer       |
-                        |  - Rate Limiting, JWT Validation, SSL Term.   |
-                        +-------+-------------------------------+-------+
-                                |                               |
-                   +------------+-------------+   +-------------+------------+
-                   v                          v   v                          v
-            +---------------+         +---------------+              +---------------+
-            | Event Service |         | Hold Service  |              | Order Service |
-            | (Stateless)   |         | (Stateless)   |              | (Stateless)   |
-            +-------+-------+         +-------+-------+              +-------+-------+
-                    |                         |                              |
-                    |              +----------+----------+                   |
-                    v              v                     v                   v
-          +-------------------------------+   +-------------------------------+
-          |     Redis In-Memory Cluster   |   |     Stripe / Payment Gateway  |
-          | - Seat Status Bitmaps/Hashes  |   | - Idempotent Charge API       |
-          | - Distributed Lock (Lua TTL)  |   +-------------------------------+
-          +---------------+---------------+                                  |
-                          |                                                  |
-                          |          +-----------------------+               |
-                          |          | PgBouncer Pooler      |               |
-                          |          | (Transaction Pooling) |               |
-                          |          +-----------+-----------+               |
-                          |                      |                           |
-                          v                      v                           v
-           +------------------------------------------------------------------+
-           |                 Primary Relational DB (PostgreSQL)               |
-           | - Strict ACID Transactions, Row-Level Locks                      |
-           | - Authoritative Master for Writes (Holds, Checkouts)             |
-           +-------------------------------+----------------------------------+
-                                           | (Streaming Replication)
-                                           v
-           +------------------------------------------------------------------+
-           |                 Read Replica PostgreSQL Cluster                  |
-           | - User order history, profile queries, reporting                 |
-           +------------------------------------------------------------------+
-                                           ^
-                                           |
-           +-------------------------------+----------------------------------+
-           |            Asynchronous Workers & Queue (BullMQ / SQS)            |
-           | - Expired Hold Sweeper (reconciles expired locks every 5s)        |
-           | - Ticket PDF rendering, email/SMS dispatch                        |
-           +------------------------------------------------------------------+
+
+#### Structural Data Flow
+```
+[200,000 Fans on Web & Mobile]
+         |
+         v
+[Global CDN & WAF (Cloudflare Edge)]
+         |
+         v
+[Virtual Waiting Room (1,000 users/min FIFO Token Gate)]
+         |
+         v
+[API Gateway & Layer 7 Load Balancer (Rate Limiting, JWT)]
+     +-------------------+-------------------+
+     v                   v                   v
+[Event Service]    [Hold Service]     [Order Service]
+     |                   |                   |
+     v                   v                   v
+[Redis Cluster]    [Redis Cluster]    [Stripe Gateway]
+     |                   |                   |
+     |                   v                   |
+     |             [PgBouncer Pooler]        |
+     |                   |                   |
+     |                   v                   |
+     +------------> [PostgreSQL Primary Master] <---+
+                         |
+                         v (Streaming Replication)
+                    [PostgreSQL Read Replicas]
+                         ^
+                         |
+                    [Asynchronous Workers / BullMQ Queue]
 ```
 
 ---
