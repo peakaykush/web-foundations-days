@@ -87,54 +87,72 @@ TicketHub is a high-performance, distributed ticketing platform that handles eve
 
 ## 3. REST API Design
 
-TicketHub adheres to standard RESTful principles, utilizing predictable JSON payloads, standard HTTP status codes, and idempotency keys on mutating endpoints.
+TicketHub exposes a resource-oriented RESTful API over HTTPS. All payloads are encoded in UTF-8 JSON. Mutating endpoints mandate cryptographic authorization tokens and client-generated idempotency keys to ensure request deduplication during network retries.
+
+### Common Headers
+- `Authorization: Bearer <jwt_access_token>`: Authenticates the user session.
+- `Idempotency-Key: <uuid_v4>`: Ensures safe client retries without duplicate holds or payments.
+- `Content-Type: application/json`: Specifies payload encoding.
+
+---
 
 ### 3.1 `GET /api/v1/events`
-Browse and search available events with pagination and filtering.
+Browse and search the public event catalog with pagination and faceted filters.
 
 - **Query Parameters:**
-  - `query` (string, optional): Search keyword (e.g., "Coldplay").
-  - `category` (string, optional): `CONCERT`, `SPORTS`, `THEATER`.
-  - `city` (string, optional): Filter by venue city.
-  - `page` (integer, default: 1): Page index.
-  - `limit` (integer, default: 20): Results per page (max 100).
+  - `query` (string, optional): Keyword search matching event title, artist, or venue.
+  - `category` (string, optional): Filter by `CONCERT`, `SPORTS`, `THEATER`.
+  - `city` (string, optional): Filter by venue city (e.g., `London`).
+  - `page` (integer, default: `1`): Pagination page index.
+  - `limit` (integer, default: `20`, max: `100`): Results per page.
 - **Responses:**
   - `200 OK`:
     ```json
     {
       "data": [
         {
-          "id": "evt_9b1deb4d",
-          "title": "Coldplay - Music of the Spheres",
+          "id": "evt_9b1deb4d-3f82-411a-8212-07612f0a8d9a",
+          "title": "Coldplay - Music of the Spheres World Tour",
           "venue": "Wembley Stadium",
           "city": "London",
           "event_date": "2026-11-15T19:30:00Z",
           "sale_start_time": "2026-11-01T10:00:00Z",
-          "status": "UPCOMING",
-          "min_price_cents": 6500
+          "status": "ON_SALE",
+          "total_seats": 20000,
+          "min_price_cents": 6500,
+          "max_price_cents": 25000
         }
       ],
-      "pagination": { "page": 1, "limit": 20, "total_events": 142 }
+      "pagination": {
+        "page": 1,
+        "limit": 20,
+        "total_items": 142,
+        "total_pages": 8
+      }
     }
     ```
 
 ---
 
 ### 3.2 `GET /api/v1/events/{eventId}/seats`
-Retrieve the real-time seat map and status for an event.
+Retrieve the interactive seat map and current availability statuses for an event.
 
 - **Path Parameters:**
-  - `eventId` (string, required): Unique identifier of the event.
+  - `eventId` (UUID, required): Unique identifier of the event.
 - **Responses:**
   - `200 OK`:
     ```json
     {
-      "event_id": "evt_9b1deb4d",
-      "total_seats": 20000,
-      "available_seats": 1420,
+      "event_id": "evt_9b1deb4d-3f82-411a-8212-07612f0a8d9a",
+      "summary": {
+        "total_seats": 20000,
+        "available_seats": 1420,
+        "held_seats": 850,
+        "sold_seats": 17730
+      },
       "seats": [
         {
-          "id": "seat_101",
+          "id": "seat_a1_12_04",
           "section": "A1",
           "row": "12",
           "seat_number": 4,
@@ -142,7 +160,7 @@ Retrieve the real-time seat map and status for an event.
           "status": "AVAILABLE"
         },
         {
-          "id": "seat_102",
+          "id": "seat_a1_12_05",
           "section": "A1",
           "row": "12",
           "seat_number": 5,
@@ -152,55 +170,81 @@ Retrieve the real-time seat map and status for an event.
       ]
     }
     ```
-  - `404 Not Found`: Event does not exist.
+  - `404 Not Found`: Event ID does not exist.
 
 ---
 
 ### 3.3 `POST /api/v1/events/{eventId}/holds`
-Place a temporary 10-minute hold on one or more selected seats.
+Attempt to place a temporary 10-minute hold on up to 4 designated seats.
 
+- **Path Parameters:**
+  - `eventId` (UUID, required): Unique identifier of the event.
 - **Headers:**
-  - `Authorization: Bearer <jwt_token>`
+  - `Authorization: Bearer <jwt_access_token>`
   - `Idempotency-Key: <unique_client_uuid>`
 - **Request Body:**
   ```json
   {
-    "seat_ids": ["seat_101", "seat_102"]
+    "seat_ids": [
+      "seat_a1_12_04",
+      "seat_a1_12_05"
+    ]
   }
   ```
 - **Responses:**
   - `201 Created`:
     ```json
     {
-      "hold_id": "hld_4a71f0c2",
-      "event_id": "evt_9b1deb4d",
-      "user_id": "usr_88291aef",
-      "seat_ids": ["seat_101", "seat_102"],
+      "hold_id": "hld_4a71f0c2-5e91-49b9-9135-d22744ad116e",
+      "event_id": "evt_9b1deb4d-3f82-411a-8212-07612f0a8d9a",
+      "user_id": "usr_88291aef-bc30-4e89-8cb3-3e198a28795c",
+      "seat_ids": [
+        "seat_a1_12_04",
+        "seat_a1_12_05"
+      ],
       "total_amount_cents": 25000,
-      "expires_at": "2026-11-01T10:10:00Z",
+      "created_at": "2026-11-01T10:00:15Z",
+      "expires_at": "2026-11-01T10:10:15Z",
       "hold_duration_seconds": 600
     }
     ```
-  - `400 Bad Request`: Exceeds maximum 4 seats per transaction or malformed IDs.
-  - `409 Conflict`: One or more requested seats are already `HELD` or `SOLD`.
-  - `429 Too Many Requests`: Rate limit exceeded.
+  - `400 Bad Request`: Payload validation error (e.g., requesting > 4 seats or empty array).
+  - `409 Conflict`: One or more requested seats are already `HELD` or `SOLD`. Returns array of colliding seat IDs.
+  - `429 Too Many Requests`: Rate limit exceeded or queue token invalid.
 
 ---
 
-### 3.4 `POST /api/v1/orders/checkout`
-Process payment and convert held seats into confirmed ticket purchases.
+### 3.4 `DELETE /api/v1/events/{eventId}/holds/{holdId}`
+Explicitly release active holds early if a user decides not to complete checkout.
+
+- **Path Parameters:**
+  - `eventId` (UUID, required): Event ID.
+  - `holdId` (UUID, required): Hold ID to cancel.
+- **Headers:**
+  - `Authorization: Bearer <jwt_access_token>`
+- **Responses:**
+  - `204 No Content`: Seats released back to `AVAILABLE`.
+  - `404 Not Found`: Hold does not exist or does not belong to the calling user.
+
+---
+
+### 3.5 `POST /api/v1/orders/checkout`
+Commit held seats into permanently confirmed ticket purchases following successful payment authorization.
 
 - **Headers:**
-  - `Authorization: Bearer <jwt_token>`
+  - `Authorization: Bearer <jwt_access_token>`
   - `Idempotency-Key: <unique_client_uuid>`
 - **Request Body:**
   ```json
   {
-    "hold_id": "hld_4a71f0c2",
+    "hold_id": "hld_4a71f0c2-5e91-49b9-9135-d22744ad116e",
+    "event_id": "evt_9b1deb4d-3f82-411a-8212-07612f0a8d9a",
     "payment_method_id": "pm_card_visa_4242",
-    "billing_address": {
-      "country": "US",
-      "postal_code": "94103"
+    "billing_details": {
+      "name": "Peter Kush",
+      "email": "peter@example.com",
+      "postal_code": "SW1A 1AA",
+      "country": "GB"
     }
   }
   ```
@@ -208,43 +252,47 @@ Process payment and convert held seats into confirmed ticket purchases.
   - `200 OK`:
     ```json
     {
-      "order_id": "ord_8830112c",
+      "order_id": "ord_8830112c-98aa-462a-89a1-5d94726bfcf3",
       "status": "PAID",
-      "event_id": "evt_9b1deb4d",
+      "event_id": "evt_9b1deb4d-3f82-411a-8212-07612f0a8d9a",
       "total_amount_cents": 25000,
       "tickets_count": 2,
       "confirmation_code": "TH-9821-XQ",
-      "created_at": "2026-11-01T10:04:12Z"
+      "created_at": "2026-11-01T10:04:12Z",
+      "receipt_url": "https://tickethub.com/receipts/ord_8830112c"
     }
     ```
-  - `400 Bad Request`: Payment provider rejected card or hold has expired.
-  - `409 Conflict`: Hold expired and seats were claimed by another buyer.
+  - `400 Bad Request`: Invalid payment credentials or malformed parameters.
+  - `402 Payment Required`: Upstream payment gateway declined charge (e.g., insufficient funds).
+  - `409 Conflict`: Hold expired before payment was authorized and seats were claimed by another buyer.
 
 ---
 
-### 3.5 `GET /api/v1/users/me/tickets`
+### 3.6 `GET /api/v1/users/me/tickets`
 Retrieve order history and digital admission tickets for the authenticated user.
 
 - **Headers:**
-  - `Authorization: Bearer <jwt_token>`
+  - `Authorization: Bearer <jwt_access_token>`
 - **Responses:**
   - `200 OK`:
     ```json
     {
       "orders": [
         {
-          "order_id": "ord_8830112c",
-          "event_title": "Coldplay - Music of the Spheres",
+          "order_id": "ord_8830112c-98aa-462a-89a1-5d94726bfcf3",
+          "event_title": "Coldplay - Music of the Spheres World Tour",
           "venue": "Wembley Stadium",
           "event_date": "2026-11-15T19:30:00Z",
           "status": "CONFIRMED",
           "tickets": [
             {
-              "ticket_id": "tkt_001",
+              "ticket_id": "tkt_001_a1_12_04",
               "section": "A1",
               "row": "12",
               "seat_number": 4,
-              "qr_code_payload": "https://api.tickethub.com/v1/verify/tkt_001?sig=9fbc8"
+              "ticket_holder": "Peter Kush",
+              "qr_code_payload": "https://api.tickethub.com/v1/verify/tkt_001_a1_12_04?sig=3f81e9b2c8",
+              "issued_at": "2026-11-01T10:04:12Z"
             }
           ]
         }
@@ -254,7 +302,37 @@ Retrieve order history and digital admission tickets for the authenticated user.
 
 ---
 
-## 4. Data Model & Double-Booking Prevention
+### 3.7 `GET /api/v1/waiting-room/status`
+Allows waiting room clients to poll their current queue position and obtain admission tokens.
+
+- **Headers:**
+  - `Authorization: Bearer <queue_session_token>`
+- **Responses:**
+  - `200 OK (Queued)`:
+    ```json
+    {
+      "status": "QUEUED",
+      "queue_position": 4210,
+      "estimated_wait_seconds": 240,
+      "admitted": false
+    }
+    ```
+  - `200 OK (Admitted)`:
+    ```json
+    {
+      "status": "ADMITTED",
+      "queue_position": 0,
+      "admitted": true,
+      "admission_token": "eyJh...hmac_admission_token",
+      "valid_until": "2026-11-01T10:15:00Z"
+    }
+    ```
+
+---
+
+## 4. Relational Database Schema & Data Model
+
+TicketHub utilizes PostgreSQL as its primary authoritative transactional data store. The relational model enforces referential integrity, domain constraints, and uniqueness rules at the database engine level.
 
 ### 4.1 Entity Relational Diagram (ERD)
 
@@ -272,17 +350,21 @@ erDiagram
         string email UK
         string password_hash
         string full_name
+        string phone
         timestamp created_at
+        timestamp updated_at
     }
 
     EVENTS {
         uuid id PK
         string title
         string venue
+        string city
         timestamp event_date
         timestamp sale_start_time
         int total_seats
         string status
+        timestamp created_at
     }
 
     SEATS {
@@ -296,6 +378,8 @@ erDiagram
         uuid held_by_user_id FK
         timestamp hold_expires_at
         int version
+        timestamp created_at
+        timestamp updated_at
     }
 
     ORDERS {
@@ -306,6 +390,7 @@ erDiagram
         string payment_status
         string payment_intent_id
         string idempotency_key UK
+        string confirmation_code UK
         timestamp created_at
     }
 
@@ -314,16 +399,22 @@ erDiagram
         uuid order_id FK
         uuid seat_id FK
         int price_cents
-        string ticket_token
+        string ticket_token UK
+        timestamp created_at
     }
 ```
 
 ---
 
-### 4.2 SQL Schema Definitions & Constraints
+### 4.2 SQL DDL Schema Definitions & Integrity Constraints
 
 ```sql
+-- Enable cryptographic UUID extension
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ============================================================================
 -- 1. USERS TABLE
+-- ============================================================================
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL UNIQUE,
@@ -334,26 +425,32 @@ CREATE TABLE users (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- ============================================================================
 -- 2. EVENTS TABLE
+-- ============================================================================
 CREATE TABLE events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     title VARCHAR(255) NOT NULL,
     venue VARCHAR(255) NOT NULL,
+    city VARCHAR(100) NOT NULL,
     event_date TIMESTAMP WITH TIME ZONE NOT NULL,
     sale_start_time TIMESTAMP WITH TIME ZONE NOT NULL,
     total_seats INT NOT NULL CHECK (total_seats > 0),
     status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' 
-        CHECK (status IN ('DRAFT', 'UPCOMING', 'ON_SALE', 'SOLD_OUT', 'COMPLETED')),
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+        CHECK (status IN ('DRAFT', 'UPCOMING', 'ON_SALE', 'SOLD_OUT', 'COMPLETED', 'CANCELLED')),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
--- 3. SEATS TABLE (Core inventory with state management)
+-- ============================================================================
+-- 3. SEATS TABLE (Authoritative Inventory & State Tracking)
+-- ============================================================================
 CREATE TABLE seats (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     section VARCHAR(32) NOT NULL,
     row_label VARCHAR(16) NOT NULL,
-    seat_number INT NOT NULL,
+    seat_number INT NOT NULL CHECK (seat_number > 0),
     price_cents INT NOT NULL CHECK (price_cents >= 0),
     status VARCHAR(16) NOT NULL DEFAULT 'AVAILABLE'
         CHECK (status IN ('AVAILABLE', 'HELD', 'SOLD')),
@@ -363,16 +460,14 @@ CREATE TABLE seats (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     
-    -- Constraint 1: Physical seat uniqueness per event
+    -- Constraint 1: Absolute Physical Uniqueness
+    -- Prevents duplicate coordinates from ever being registered for an event
     CONSTRAINT uq_event_physical_seat UNIQUE (event_id, section, row_label, seat_number)
 );
 
--- Indexes for performance
-CREATE INDEX idx_seats_event_status ON seats(event_id, status);
-CREATE INDEX idx_seats_hold_expiry ON seats(status, hold_expires_at) 
-    WHERE status = 'HELD';
-
+-- ============================================================================
 -- 4. ORDERS TABLE
+-- ============================================================================
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id),
@@ -382,34 +477,74 @@ CREATE TABLE orders (
         CHECK (payment_status IN ('PENDING', 'PAID', 'FAILED', 'REFUNDED')),
     payment_intent_id VARCHAR(255),
     idempotency_key VARCHAR(128) NOT NULL UNIQUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
+    confirmation_code VARCHAR(32) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- ============================================================================
 -- 5. ORDER_ITEMS TABLE
+-- ============================================================================
 CREATE TABLE order_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     seat_id UUID NOT NULL REFERENCES seats(id),
-    price_cents INT NOT NULL,
+    price_cents INT NOT NULL CHECK (price_cents >= 0),
     ticket_token VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL,
     
-    -- Constraint 2: Each seat can only ever belong to one order
+    -- Constraint 2: Single-Fulfillment Guarantee
+    -- Mathematically ensures a seat can belong to at most one order item forever
     CONSTRAINT uq_seat_single_order UNIQUE (seat_id)
 );
 ```
 
 ---
 
-### 4.3 Preventing Double-Booking (Concurrency & Transaction Strategy)
+### 4.3 Performance Indexes & Query Optimization Strategy
 
-Double-booking occurs when two concurrent requests read seat state as "available" simultaneously, and both proceed to reserve it. TicketHub solves this definitively through **multi-layered database constraints and atomic state transitions**:
+Under peak traffic, indexing determines whether the database survives or collapses into connection timeouts. The following indexes are applied:
 
-#### Layer 1: Relational Uniqueness Constraints
-- `uq_event_physical_seat`: Guarantees that a physical coordinate (Section A1, Row 12, Seat 4) cannot be registered twice in an event.
-- `uq_seat_single_order`: Enforces that a seat ID can never appear in more than one confirmed order item.
+```sql
+-- 1. Seat Availability Composite Index:
+-- Accelerates real-time seat map lookups and filtering by event and status.
+CREATE INDEX idx_seats_event_status ON seats(event_id, status);
 
-#### Layer 2: Atomic Conditional Update for Seat Holds
-Instead of a naive "read-then-write" query pattern, TicketHub uses an atomic SQL `UPDATE` statement guarded by optimistic locking conditions:
+-- 2. Partial Index for Expired Hold Sweeping:
+-- Only indexes rows currently in HELD state. For 20,000 seats where 1,000 are held,
+-- this B-tree contains exactly 1,000 entries rather than 20,000, executing in < 1 ms.
+CREATE INDEX idx_seats_held_expiry ON seats(hold_expires_at) 
+WHERE status = 'HELD';
+
+-- 3. User Order Lookup Index:
+-- Enables instant retrieval of user ticket histories.
+CREATE INDEX idx_orders_user_created ON orders(user_id, created_at DESC);
+
+-- 4. Event Discovery Index:
+-- Powers event search and date-ordered listing pages.
+CREATE INDEX idx_events_date_status ON events(event_date, status);
+```
+
+---
+
+## 5. Double-Booking Prevention & Concurrency Locking Strategy
+
+Double-booking occurs when concurrent requests interleave between reading seat availability and committing a reservation. When 10 users fight for the identical seat within the same millisecond, a naive architecture experiences race conditions:
+
+```
+User A -> SELECT status FROM seats WHERE id = 'seat_101' -> Returns 'AVAILABLE'
+User B -> SELECT status FROM seats WHERE id = 'seat_101' -> Returns 'AVAILABLE'
+User A -> UPDATE seats SET status = 'HELD', held_by_user_id = 'User A' -> Success
+User B -> UPDATE seats SET status = 'HELD', held_by_user_id = 'User B' -> Overwrites User A!
+```
+
+TicketHub solves this using a multi-layered concurrency architecture combining atomic conditional SQL mutations, pessimistic checkout locking, and Redis distributed pre-locks.
+
+---
+
+### 5.1 Layer 1: Atomic Conditional SQL Updates for Seat Holds
+
+Rather than reading before writing, TicketHub merges verification and mutation into a single atomic SQL statement guarded by state conditions:
 
 ```sql
 UPDATE seats
@@ -421,184 +556,310 @@ SET status = 'HELD',
 WHERE id IN ($seatId1, $seatId2)
   AND event_id = $eventId
   AND (
-    status = 'AVAILABLE'
+    status = 'AVAILABLE' 
     OR (status = 'HELD' AND hold_expires_at < NOW())
   );
 ```
 
-**How It Prevents Race Conditions:**
-1. **Row-Level Mutual Exclusion:** The database engine places exclusive write locks on candidate rows during statement execution.
-2. **Atomic State Evaluation:** Even if 10,000 users attempt to hold Seat #101 simultaneously, the database executes updates sequentially per row. The first transaction finds `status = 'AVAILABLE'`, changes it to `'HELD'`, and commits.
-3. **Immediate Rejection of Colliding Requests:** The other 9,999 transactions evaluate the `WHERE` clause after the first update commits, find that `status` is already `'HELD'` (and unexpired), and match zero rows.
-4. **Application Validation:**
+#### How This Guarantees Concurrency Correctness:
+1. **Row-Level Mutual Exclusion:** When PostgreSQL processes an `UPDATE`, it acquires an exclusive row-level write lock (`ExclusiveLock`) on candidate tuples.
+2. **Sequential Queueing:** If 10 transactions arrive simultaneously for Seat #101, PostgreSQL serializes their execution on that specific row.
+3. **Atomic Evaluation of Predicate:** The first transaction acquires the lock, observes `status = 'AVAILABLE'`, updates the row to `'HELD'`, increments `version`, and commits.
+4. **Immediate Rejection:** The remaining 9 transactions unblock and evaluate the `WHERE` clause against the newly committed tuple. Because `status` is now `'HELD'` and `hold_expires_at > NOW()`, the predicate evaluates to false. Exactly 0 rows are updated.
+5. **Application-Level Atomicity Verification:**
    ```javascript
+   // All requested seats must be captured in the single atomic statement
    if (result.rowCount !== requestedSeatIds.length) {
-     // At least one seat was claimed by someone else; abort hold
-     throw new ConflictException("One or more selected seats are no longer available.");
+     // If fewer rows matched, at least one seat was taken.
+     // Invalidate partial hold and throw conflict exception
+     throw new SeatConflictException("One or more selected seats are no longer available.");
    }
    ```
 
-#### Layer 3: Pessimistic Row Lock During Checkout
-When the user submits payment, the checkout transaction explicitly locks the seats to guarantee that background cleanup tasks cannot release the hold while payment is in-flight:
+---
+
+### 5.2 Layer 2: Pessimistic Row-Level Locking During Checkout (`SELECT ... FOR UPDATE`)
+
+During the payment transaction, we must guarantee that neither a concurrent hold-cancellation nor a background expiration sweeper modifies the seat while payment processing is in-flight.
 
 ```sql
 BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED;
 
--- 1. Lock held seats exclusively for this user
-SELECT id, price_cents FROM seats
-WHERE id IN ($seatIds)
+-- 1. Sort seat IDs to guarantee global lock ordering and eliminate deadlocks:
+-- In code: const sortedSeatIds = [...requestedSeatIds].sort();
+
+-- 2. Acquire explicit exclusive row locks on the held seats
+SELECT id, price_cents, version
+FROM seats
+WHERE id IN ($sortedSeatIds)
   AND event_id = $eventId
   AND held_by_user_id = $userId
   AND status = 'HELD'
   AND hold_expires_at > NOW()
-FOR UPDATE; -- Blocks any concurrent hold-sweeper or modification
+FOR UPDATE;
 
--- Check if all requested seats were successfully locked
--- If count != seatIds.length, ROLLBACK and return 409 Conflict
+-- Application Check:
+-- Verify locked row count exactly equals sortedSeatIds.length.
+-- If not, ROLLBACK and return 409 Conflict (Hold expired or hijacked).
 
--- 2. Create Order record
-INSERT INTO orders (id, user_id, event_id, total_amount_cents, payment_status, idempotency_key)
-VALUES ($orderId, $userId, $eventId, $totalPrice, 'PAID', $idempotencyKey);
+-- 3. Create the confirmed Order record (idempotency key prevents duplicate charges)
+INSERT INTO orders (
+    id, user_id, event_id, total_amount_cents, 
+    payment_status, payment_intent_id, idempotency_key, confirmation_code
+) VALUES (
+    $orderId, $userId, $eventId, $totalAmountCents, 
+    'PAID', $paymentIntentId, $idempotencyKey, $confirmationCode
+);
 
--- 3. Transition seats to permanently SOLD
+-- 4. Transition seats permanently to SOLD
 UPDATE seats
 SET status = 'SOLD',
     held_by_user_id = NULL,
     hold_expires_at = NULL,
-    version = version + 1
-WHERE id IN ($seatIds);
+    version = version + 1,
+    updated_at = NOW()
+WHERE id IN ($sortedSeatIds);
 
--- 4. Create Order Items (digital ticket records)
-INSERT INTO order_items (order_id, seat_id, price_cents, ticket_token)
-VALUES ...;
+-- 5. Generate digital ticket items
+INSERT INTO order_items (id, order_id, seat_id, price_cents, ticket_token)
+VALUES 
+  (gen_random_uuid(), $orderId, $seatId1, $price1, $token1),
+  (gen_random_uuid(), $orderId, $seatId2, $price2, $token2);
 
 COMMIT;
 ```
 
+#### Deadlock Prevention via Canonical Lock Ordering
+When multiple transactions lock multiple rows simultaneously, deadlocks occur if locks are acquired in opposing order (e.g., Tx 1 locks Seat A then requests Seat B; Tx 2 locks Seat B then requests Seat A). TicketHub enforces **canonical alphabetical sorting of all seat UUIDs prior to issuing `FOR UPDATE`**. Because every transaction requests locks in identical sequence, circular wait dependencies are mathematically impossible.
+
 ---
 
-## 5. System Architecture & Big-Sale Resilience
+### 5.3 Layer 3: High-Throughput Redis Distributed Pre-Hold (Lua Script)
 
-### 5.1 Architecture Diagram
+While PostgreSQL guarantees ACID correctness, subjecting the database to 2,500 write attempts/second where 90% are doomed collisions wastes database CPU and connection slots. TicketHub intercepts holds at an in-memory Redis cluster executing an atomic Lua script:
 
-```
-                              [ 200,000 Fans on Mobile / Web ]
-                                             │
-                                             ▼
-                     ┌───────────────────────────────────────────────┐
-                     │          Global CDN & Edge Layer              │
-                     │  - Cloudflare Edge (DDoS Mitigation, WAF)     │
-                     │  - Static Asset & Event Metadata Caching      │
-                     └───────────────────────┬───────────────────────┘
-                                             │
-                                             ▼
-                     ┌───────────────────────────────────────────────┐
-                     │      Virtual Waiting Room / Token Gate        │
-                     │  - Throttles 200k users to 1,000 users/minute │
-                     │  - Cryptographic Admission Cookie (FIFO)      │
-                     └───────────────────────┬───────────────────────┘
-                                             │
-                                             ▼
-                     ┌───────────────────────────────────────────────┐
-                     │     API Gateway / Layer 7 Load Balancer       │
-                     │  - Rate Limiting, JWT Validation, SSL Term.   │
-                     └───────┬───────────────────────────────┬───────┘
-                             │                               │
-                ┌────────────┴─────────────┐   ┌─────────────┴────────────┐
-                ▼                          ▼   ▼                          ▼
-         ┌───────────────┐         ┌───────────────┐              ┌───────────────┐
-         │ Event Service │         │ Hold Service  │              │ Order Service │
-         │ (Stateless)   │         │ (Stateless)   │              │ (Stateless)   │
-         └───────┬───────┘         └───────┬───────┘              └───────┬───────┘
-                 │                         │                              │
-                 │              ┌──────────┴──────────┐                   │
-                 ▼              ▼                     ▼                   ▼
-       ┌───────────────────────────────┐   ┌───────────────────────────────┐
-       │     Redis In-Memory Cluster   │   │     Stripe / Payment Gateway  │
-       │ - Seat Status Bitmaps/Hashes  │   │ - Idempotent Charge API       │
-       │ - Distributed Lock / Hold TTL │   └───────────────────────────────┘
-       └───────────────┬───────────────┘                                  │
-                       │                                                  │
-                       │          ┌───────────────────────┐               │
-                       │          │ PgBouncer Pooler      │               │
-                       │          └───────────┬───────────┘               │
-                       │                      │                           │
-                       ▼                      ▼                           ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                 Primary Relational DB (PostgreSQL)              │
-        │ - Strict ACID Transactions, Row-Level Locks                     │
-        │ - Master for Writes (Holds, Checkouts)                          │
-        └───────────────────────────────┬──────────────────────────────────┘
-                                        │ (Streaming Replication)
-                                        ▼
-        ┌──────────────────────────────────────────────────────────────────┐
-        │                 Read Replica PostgreSQL Cluster                 │
-        │ - User order history, profile queries, reporting                 │
-        └──────────────────────────────────────────────────────────────────┘
-                                        ▲
-                                        │
-        ┌───────────────────────────────┴──────────────────────────────────┐
-        │            Asynchronous Workers & Queue (BullMQ / SQS)           │
-        │ - Expired Hold Sweeper (reconciles expired locks every 5s)       │
-        │ - Ticket PDF generation, email/SMS dispatch                      │
-        └──────────────────────────────────────────────────────────────────┘
+```lua
+-- Multi-seat atomic hold script in Redis
+-- KEYS: Array of seat lock keys (e.g., "lock:evt_1:seat_101", "lock:evt_1:seat_102")
+-- ARGV[1]: user_id
+-- ARGV[2]: ttl_seconds (e.g., 600)
+
+-- Step 1: Verify all requested seats are unheld
+for i, key in ipairs(KEYS) do
+    local holder = redis.call('GET', key)
+    if holder ~= false then
+        return 0 -- Failed: at least one seat is already locked
+    end
+end
+
+-- Step 2: Atomically lock all seats with TTL
+for i, key in ipairs(KEYS) do
+    redis.call('SET', key, ARGV[1], 'EX', ARGV[2])
+end
+
+return 1 -- Success: all seats locked
 ```
 
----
-
-### 5.2 Component Breakdown & Big-Sale Survival Strategy
-
-1. **Edge CDN (Cloudflare) & Static Offloading:**
-   - Caches event marketing assets, static seat-map SVGs, and event details at edge points-of-presence worldwide.
-   - Shields the origin servers from over **90% of raw request volume**.
-
-2. **Virtual Waiting Room (Shock Absorber & Fair Admission):**
-   - **The Problem:** 200,000 users hitting the backend at once would spawn 200,000 concurrent database connections, exhausting memory and causing immediate connection starvation.
-   - **The Solution:** When active traffic exceeds safe backend capacity, incoming users enter a Virtual Waiting Room (managed at the edge via Cloudflare or Redis sorted sets).
-   - Users receive an estimated wait time and position number.
-   - The queue drains at a regulated rate matching database write capacity: **1,000 admitted users per minute** receive a time-bound, cryptographically signed admission token (HMAC-SHA256) allowing access to the seat selection and checkout API.
-
-3. **In-Memory Redis Cache & Distributed Lock:**
-   - Maintains an in-memory bitmap or hash of seat statuses for the hot event (`HGET seat_map:evt_9b1deb4d seat_101`).
-   - Uses atomic Lua scripts for the initial hold attempt. If Redis detects the seat is already held, it rejects the request in 0.5 milliseconds without touching PostgreSQL. Only valid prospective holds proceed to the database transaction.
-
-4. **Database Connection Pooler (PgBouncer):**
-   - Keeps PostgreSQL connections capped at a healthy threshold (e.g., 200 dedicated connections) regardless of how many application instances scale up. Prevents process thrashing and thread starvation.
-
-5. **Asynchronous Background Sweeper:**
-   - Runs a lightweight cron every 5 seconds querying `WHERE status = 'HELD' AND hold_expires_at < NOW()`.
-   - Batch resets expired holds to `AVAILABLE`, automatically republishing inventory without blocking checkout requests.
+- **Execution Time:** ~0.4 milliseconds in Redis single-threaded event loop.
+- **Outcome:** The 90% of colliding requests are rejected immediately at the Redis layer with HTTP 409, shielding PostgreSQL from catastrophic write contention.
 
 ---
 
-## 6. Architectural Trade-Offs
+### 5.4 Layer 4: Expired Hold Janitor Sweeper (`FOR UPDATE SKIP LOCKED`)
 
-### 6.1 Trade-Off 1: Virtual Waiting Room (Fair Queue) vs. Elastic Infinite Auto-Scaling
-- **Decision:** Implement a strict Virtual Waiting Room that throttles access to 1,000 users/minute during major on-sales, rather than attempting to scale application and database tiers to serve 200,000 simultaneous checkouts.
+If a user abandons their browser after placing a hold, the 10-minute hold window must be released so other fans can purchase the seats. An asynchronous background janitor job runs every 5 seconds executing a batch reclamation query:
+
+```sql
+UPDATE seats
+SET status = 'AVAILABLE',
+    held_by_user_id = NULL,
+    hold_expires_at = NULL,
+    version = version + 1,
+    updated_at = NOW()
+WHERE id IN (
+    SELECT id
+    FROM seats
+    WHERE status = 'HELD'
+      AND hold_expires_at < NOW()
+    LIMIT 500
+    FOR UPDATE SKIP LOCKED
+);
+```
+
+#### Why `SKIP LOCKED` is Critical:
+If an active checkout transaction is currently executing `SELECT ... FOR UPDATE` on a seat whose hold is at second 599, standard locking would cause the janitor job to block or wait on the user's transaction. `SKIP LOCKED` instructs PostgreSQL to immediately ignore any rows currently locked by in-flight checkouts, eliminating lock contention between background sweepers and paying customers.
+
+---
+
+## 6. System Architecture & Flash-Sale Resilience
+
+### 6.1 End-to-End System Architecture Diagram
+
+```
+                                [ 200,000 Fans on Web & Mobile ]
+                                                │
+                                                ▼
+                        ┌───────────────────────────────────────────────┐
+                        │          Global CDN & Edge Layer              │
+                        │  - Cloudflare Edge (DDoS Mitigation, WAF)     │
+                        │  - Static Asset & Venue Map Caching           │
+                        └───────────────────────┬───────────────────────┘
+                                                │
+                                                ▼
+                        ┌───────────────────────────────────────────────┐
+                        │      Virtual Waiting Room / Token Gate        │
+                        │  - Throttles 200k users to 1,000 users/minute │
+                        │  - Cryptographic Admission Token (FIFO)       │
+                        └───────────────────────┬───────────────────────┘
+                                                │
+                                                ▼
+                        ┌───────────────────────────────────────────────┐
+                        │     API Gateway / Layer 7 Load Balancer       │
+                        │  - Rate Limiting, JWT Validation, SSL Term.   │
+                        └───────┬───────────────────────────────┬───────┘
+                                │                               │
+                   ┌────────────┴─────────────┐   ┌─────────────┴────────────┐
+                   ▼                          ▼   ▼                          ▼
+            ┌───────────────┐         ┌───────────────┐              ┌───────────────┐
+            │ Event Service │         │ Hold Service  │              │ Order Service │
+            │ (Stateless)   │         │ (Stateless)   │              │ (Stateless)   │
+            └───────┬───────┘         └───────┬───────┘              └───────┬───────┘
+                    │                         │                              │
+                    │              ┌──────────┴──────────┐                   │
+                    ▼              ▼                     ▼                   ▼
+          ┌───────────────────────────────┐   ┌───────────────────────────────┐
+          │     Redis In-Memory Cluster   │   │     Stripe / Payment Gateway  │
+          │ - Seat Status Bitmaps/Hashes  │   │ - Idempotent Charge API       │
+          │ - Distributed Lock (Lua TTL)  │   └───────────────────────────────┘
+          └───────────────┬───────────────┘                                  │
+                          │                                                  │
+                          │          ┌───────────────────────┐               │
+                          │          │ PgBouncer Pooler      │               │
+                          │          │ (Transaction Pooling) │               │
+                          │          └───────────┬───────────┘               │
+                          │                      │                           │
+                          ▼                      ▼                           ▼
+           ┌──────────────────────────────────────────────────────────────────┐
+           │                 Primary Relational DB (PostgreSQL)              │
+           │ - Strict ACID Transactions, Row-Level Locks                     │
+           │ - Authoritative Master for Writes (Holds, Checkouts)            │
+           └───────────────────────────────┬──────────────────────────────────┘
+                                           │ (Streaming Replication)
+                                           ▼
+           ┌──────────────────────────────────────────────────────────────────┐
+           │                 Read Replica PostgreSQL Cluster                 │
+           │ - User order history, profile queries, reporting                 │
+           └──────────────────────────────────────────────────────────────────┘
+                                           ▲
+                                           │
+           ┌───────────────────────────────┴──────────────────────────────────┐
+           │            Asynchronous Workers & Queue (BullMQ / SQS)           │
+           │ - Expired Hold Sweeper (reconciles expired locks every 5s)       │
+           │ - Ticket PDF rendering, email/SMS dispatch                       │
+           └──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 6.2 Component Deep Dive & Big-Sale Survival Tactics
+
+1. **Edge CDN & Web Application Firewall (Cloudflare):**
+   - **Bot Mitigation:** Blocks high-frequency automated ticket-scalping scripts using Cloudflare Turnstile CAPTCHA and rate-based IP reputation rules.
+   - **Edge Caching:** Static venue maps, event metadata, and marketing assets are cached across 300+ global edge locations, absorbing **92% of all raw inbound HTTP requests**.
+
+2. **Virtual Waiting Room (Queue Gate):**
+   - **The Danger:** Dumping 200,000 concurrent fans onto application servers simultaneously causes instantaneous connection pool exhaustion and database collapse.
+   - **The Defense:** When on-sale traffic exceeds safe backend write capacity, incoming users are redirected to a FIFO Virtual Waiting Room.
+   - **Controlled Inflow:** The queue admits **1,000 users per minute**, issuing each admitted user an HMAC-SHA256 signed admission cookie valid for 15 minutes. Unauthenticated requests lacking a valid admission cookie are stopped dead at the gateway.
+
+3. **API Gateway (Kong / NGINX):**
+   - Performs TLS termination, JWT validation, and per-user token-bucket rate limiting (e.g., maximum 5 hold attempts per minute per IP) to prevent malicious flooding.
+
+4. **Stateless Microservices (Node.js / Go):**
+   - Horizontally auto-scaled across Kubernetes pods based on CPU and request latency metrics. Because services maintain zero local state, any pod can handle any user request.
+
+5. **Redis Cluster (In-Memory Shock Absorber):**
+   - Manages seat availability bitmaps and executes atomic Lua scripts for pre-locking.
+   - Shields the primary relational database by deflecting 90%+ of colliding hold requests in under 1 ms.
+
+6. **PgBouncer Connection Pooler:**
+   - **The Problem:** PostgreSQL spawns a separate OS process per connection (~10 MB RAM per connection). 5,000 direct database connections would consume 50 GB of RAM and thrash CPU on context switching.
+   - **The Solution:** PgBouncer operates in `transaction pooling` mode. 5,000 application requests share a tightly controlled pool of **200 persistent database connections**, keeping PostgreSQL operating at maximum throughput without thread starvation.
+
+7. **Primary PostgreSQL (Master Writer):**
+   - High-performance instance (e.g., 64 vCPU, 256 GB RAM, NVMe SSDs in RAID-10).
+   - Dedicated strictly to executing transactional writes (`POST /holds`, `POST /checkout`).
+
+8. **Read Replica Cluster:**
+   - Asynchronously replicated read-only databases serving event browsing, seat map fetches, and order history queries (`GET /events`, `GET /tickets`), isolating read traffic from write locks.
+
+9. **Asynchronous Message Queue (BullMQ / SQS) & Workers:**
+   - Decouples non-critical path operations from checkout latency. Ticket PDF rendering, confirmation emails, and QR code signing are placed onto queues and processed asynchronously within 10 seconds of purchase.
+
+10. **Payment Gateway (Stripe):**
+    - Processes credit card charges with idempotent client keys. Webhook listeners ensure that order status transitions reliably even if the user closes their browser mid-checkout.
+
+---
+
+## 7. Architectural Trade-Off Analyses
+
+Every distributed systems architecture represents an intentional set of trade-offs between consistency, availability, operational complexity, and user experience. Below are the key engineering decisions made for TicketHub.
+
+---
+
+### 7.1 Trade-Off 1: Virtual Waiting Room vs. Infinite Elastic Auto-Scaling
+- **Decision:** Enforce a strict Virtual Waiting Room that queues users and admits a regulated 1,000 users/minute during flash sales, rather than attempting to auto-scale application and database infrastructure to serve all 200,000 fans simultaneously.
 - **Advantages:**
-  - **Systemic Survival:** Relational databases have a physical limit on write concurrency for the same table. Attempting to horizontally scale web servers to handle 200,000 simultaneous transactions causes database connection pool exhaustion and table lock gridlock.
-  - **Absolute Fairness:** First-Come, First-Served queue ordering guarantees that early fans get tickets, eliminating the lottery effect where botnets overwhelm human users.
+  - **Relational Integrity Protection:** While stateless web servers scale horizontally to infinity, relational databases have physical write-lock limits when updating the *exact same table rows*. Throttling incoming traffic keeps write operations well below database saturation thresholds.
+  - **Guaranteed Systemic Survival:** Eliminates cascading service crashes, database connection pool exhaustion, and HTTP 504 gateway timeouts.
+  - **Ethical Fairness:** Implements strict First-Come, First-Served queue ordering, preventing botnets with superior network latency from monopolizing tickets.
 - **Disadvantages:**
-  - **User Experience Friction:** Users must wait in a queue page for minutes instead of having immediate access.
-  - **Complexity:** Requires edge-based queue routing, state synchronization, and HMAC admission cookie verification.
+  - **User Friction:** Fans must wait in an online queue for several minutes.
+  - **System Complexity:** Requires edge-based queue routing, Redis sorted-set queue tracking, and cryptographic admission token validation.
+- **Justification:** Flash crowd ticketing is inherently a zero-sum allocation problem (200,000 people competing for 20,000 seats). Running an unconstrained system crashes the platform for 100% of users. The waiting room guarantees that 20,000 fans successfully transact while the platform remains 100% stable.
 
 ---
 
-### 6.2 Trade-Off 2: Atomic Relational Updates vs. Eventual Consistency (NoSQL)
-- **Decision:** Utilize PostgreSQL with strict ACID transactions and row-level locks for inventory management, rather than a globally distributed NoSQL database (e.g., DynamoDB or Cassandra) with eventual consistency.
+### 7.2 Trade-Off 2: Strong Consistency (PostgreSQL ACID, CP) vs. High Availability (NoSQL, AP)
+- **Decision:** Select PostgreSQL with strict ACID transactions and row-level locks for inventory management rather than a globally distributed NoSQL database (e.g., Apache Cassandra or DynamoDB) operating under eventual consistency.
 - **Advantages:**
-  - **Correctness Over Everything:** Under the CAP theorem, ticketing requires **Consistency and Partition Tolerance (CP)** over high Availability (AP). Relational uniqueness constraints guarantee zero double-bookings.
-  - **Transactional Atomicity:** Updating seat status, creating orders, and recording payment items occur in an atomic all-or-nothing unit of work.
+  - **Zero Overselling Guarantee:** Under the CAP theorem, ticketing requires **Consistency and Partition Tolerance (CP)** over raw Availability (AP). Database uniqueness constraints (`uq_event_physical_seat`, `uq_seat_single_order`) make double-booking mathematically impossible.
+  - **Transactional Atomicity:** Updating seat statuses, creating orders, and recording payment items occur as a unified atomic unit of work.
 - **Disadvantages:**
-  - **Vertical Bottleneck on Primary:** All inventory writes must pass through a single primary database instance, requiring aggressive edge caching and waiting-room throttling to prevent write saturation.
-  - **Higher Operational Overhead:** Requires careful connection pooling (PgBouncer) and read-replica routing.
+  - **Vertical Bottleneck on Primary Writer:** All inventory writes must pass through a single primary PostgreSQL node.
+  - **Operational Overhead:** Requires connection pooling (PgBouncer), failover replication, and read-replica routing.
+- **Justification:** In e-commerce, overselling a book can be resolved with a backorder. In live concert ticketing, selling Seat A1 Row 12 to two different people results in gate ejection, brand destruction, chargeback penalties, and potential regulatory fines. Absolute consistency is a non-negotiable requirement.
 
 ---
 
-### 6.3 Trade-Off 3: Redis In-Memory Pre-Hold vs. Direct Database-Only Locking
-- **Decision:** Place an in-memory Redis reservation layer ahead of PostgreSQL, using atomic Lua scripts to filter out conflicting hold requests before they hit the database.
+### 7.3 Trade-Off 3: Multi-Layer Redis Pre-Hold Filter vs. Direct Relational-Only Locking
+- **Decision:** Place an in-memory Redis reservation layer executing atomic Lua scripts ahead of PostgreSQL, rather than sending all seat-hold requests directly to the database.
 - **Advantages:**
-  - **Database Protection:** When 200,000 users fight over 20,000 seats, over 90% of hold requests are doomed to fail because someone else was a split-second faster. Filtering them in Redis prevents 360,000 doomed transactions from creating contention on the PostgreSQL primary.
-  - **Lightning Speed:** Redis responds in sub-millisecond time.
+  - **Massive Database Protection:** During the opening 60 seconds of a flash sale, 2,500 write attempts/second hit the system, but 90% are doomed collisions. Rejecting them at the Redis tier prevents ~360,000 unnecessary lock acquisitions and rollbacks in PostgreSQL.
+  - **Sub-Millisecond Rejection:** Users whose requested seats were just taken receive an immediate HTTP 409 in < 5 ms, allowing them to instantly select another seat before all inventory sells out.
 - **Disadvantages:**
-  - **Dual-State Synchronization:** Requires careful cache-invalidation logic so that Redis and PostgreSQL never drift out of sync if an application node crashes mid-transaction.
+  - **Dual-State Synchronization Complexity:** Requires two-phase reservation logic. If an application server crashes between acquiring the Redis pre-lock and committing the PostgreSQL transaction, state could diverge without careful TTL-based expiration and reconciliation.
+- **Justification:** The primary PostgreSQL instance is the most precious resource during a flash sale. The operational complexity of Redis pre-filtering is well justified by the order-of-magnitude reduction in database row-lock contention.
+
+---
+
+### 7.4 Trade-Off 4: Client Short-Polling vs. WebSockets / Server-Sent Events (SSE) for Seat Map Updates
+- **Decision:** Implement client-side short-polling (every 5 seconds) against a CDN-cached seat map endpoint with HTTP `ETag` / `If-None-Match` caching, rather than maintaining 200,000 persistent two-way WebSockets.
+- **Advantages:**
+  - **Connection Scalability:** Maintaining 200,000 open WebSocket TCP sockets requires massive memory overhead and specialized stateful connection gateways. Short HTTP polling allows requests to be served statelessly and cached at CDN edge nodes.
+  - **Cache Efficiency:** When the seat map has not changed, the CDN returns `304 Not Modified` with zero origin database load.
+- **Disadvantages:**
+  - **Slight Visual Latency:** Seat map status updates lag by up to 3 to 5 seconds compared to real-time WebSockets.
+- **Justification:** The seat selection step requires approximate status for browsing, but absolute correctness is enforced upon the actual hold request. Saving the operational overhead of 200,000 open WebSockets allows infrastructure resources to focus entirely on transaction throughput.
+
+---
+
+### 7.5 Trade-Off 5: Active Background Hold Sweeper (`SKIP LOCKED`) vs. Lazy On-Demand Expiration
+- **Decision:** Implement a hybrid model combining lazy expiration checks during seat-hold queries with an active background sweeper running every 5 seconds utilizing `FOR UPDATE SKIP LOCKED`.
+- **Advantages:**
+  - **Immediate Reclamation:** Seats abandoned by users are republished to the available pool within 5 seconds, maximizing ticket sales velocity during the 10-minute window.
+  - **Zero Lock Collisions:** Using `SKIP LOCKED` ensures that background sweepers never block or deadlock active customer checkouts.
+  - **Redundant Safety:** Even if the background worker temporarily delays, the conditional SQL update query (`OR (status = 'HELD' AND hold_expires_at < NOW())`) lazily reclaims expired seats on-the-fly.
+- **Disadvantages:**
+  - **Periodic Background I/O:** Runs continuous queries against the database during high-traffic periods.
+- **Justification:** The partial index `idx_seats_held_expiry` ensures the sweeper scans only a few hundred held rows in < 1 ms, delivering maximum inventory turnover with virtually undetectable database overhead.
